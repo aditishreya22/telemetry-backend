@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Live Telemetry (Simple)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{ --bg:#0b1220; --panel:#0f182b; --line:#21314d; --text:#eaf1ff; --muted:#99a6bf; --accent:#7aa2ff; --good:#16c79a; --warn:#f59e0b; --bad:#ef4444; }
+    *{box-sizing:border-box} body{margin:0;font-family:system-ui,Inter,Arial,sans-serif;color:var(--text);
+      background: radial-gradient(1000px 700px at 85% -10%, #1542ff33, transparent 70%), linear-gradient(180deg,#0a1020,#0b1220);}
+    .wrap{max-width:900px;margin:28px auto;padding:0 16px}
+    h1{margin:0 0 8px} .sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+    .panel{background:linear-gradient(180deg,var(--panel),#0b1425);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    input,button{border-radius:10px;border:1px solid var(--line);background:#0d1a33;color:var(--text);padding:8px 10px}
+    button{cursor:pointer} button:hover{background:#122347}
+    .pill{display:inline-block;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:#0d1a33;font-size:12px}
+    pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0a1326;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:13px}
+    .dot{width:10px;height:10px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px}
+    .online{background:#16c79a;box-shadow:0 0 12px #16c79a77}.offline{background:#ff6b6b;box-shadow:0 0 12px #ff6b6b77}
+    a{color:var(--accent);text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Live Telemetry</h1>
+    <div class="sub"><span id="dot" class="dot offline"></span> Device: <strong id="dev">demo</strong> • Last updated: <span id="when">—</span></div>
+
+    <div class="panel">
+      <div class="row">
+        <label for="device">Device ID:</label>
+        <input id="device" value="demo" style="width:140px">
+        <button id="btnRefresh">Refresh now</button>
+        <button id="btnAuto">Auto: ON</button>
+        <button id="btnSend">Send demo reading</button>
+        <a id="csv" class="pill" href="#" download>Export CSV</a>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row" style="margin-bottom:8px">
+        <span class="pill" id="pillTemp">Temp: —</span>
+        <span class="pill" id="pillGsr">GSR: —</span>
+        <span class="pill" id="pillFlex">Flex: —</span>
+        <span class="pill" id="pillFsr">FSR1/2: —</span>
+        <span class="pill" id="pillAccel">Accel: —</span>
+        <span class="pill" id="pillGyro">Gyro: —</span>
+      </div>
+      <pre id="out">{}</pre>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin:0 0 8px">Quick checks</h3>
+      <div class="row">
+        <a href="/health" target="_blank">/health</a>
+        <a id="aLatest" href="#" target="_blank">/latest</a>
+        <a id="aHist" href="#" target="_blank">/history</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- config/state ---
+    const qs = new URLSearchParams(location.search);
+    let deviceId = qs.get('device_id') || 'demo';
+    const devEl = document.getElementById('dev'); devEl.textContent = deviceId;
+    document.getElementById('device').value = deviceId;
+
+    const out = document.getElementById('out');
+    const whenEl = document.getElementById('when');
+    const dot = document.getElementById('dot');
+    const pillTemp = document.getElementById('pillTemp');
+    const pillGsr = document.getElementById('pillGsr');
+    const pillFlex = document.getElementById('pillFlex');
+    const pillFsr = document.getElementById('pillFsr');
+    const pillAccel = document.getElementById('pillAccel');
+    const pillGyro = document.getElementById('pillGyro');
+    const csv = document.getElementById('csv');
+    const aLatest = document.getElementById('aLatest');
+    const aHist = document.getElementById('aHist');
+
+    function fmt(ms){ const n=Number(ms); return isFinite(n)? new Date(n).toLocaleString() : '—'; }
+    function setOnline(on){ dot.classList.toggle('online',on); dot.classList.toggle('offline',!on); }
+    function badgeTemp(v){
+      if(v==null) return '—';
+      const n=Number(v); if(Number.isNaN(n)) return '—';
+      if(n>38) return `🔥 ${n.toFixed(1)}°C`;
+      if(n>36) return `⚠️ ${n.toFixed(1)}°C`;
+      return `✅ ${n.toFixed(1)}°C`;
+    }
+
+    function fillPills(latest){
+      const T = latest?.temp || [];
+      const F = latest?.fsr || [];
+      pillTemp.textContent = 'Temp: ' + (T.slice(0,5).map(badgeTemp).join(' | ') || '—');
+      pillGsr.textContent  = 'GSR: ' + (latest?.gsr ?? '—');
+      pillFlex.textContent = 'Flex: ' + (latest?.flex ?? '—');
+      pillFsr.textContent  = 'FSR1/2: ' + ((F[0]??'—') + ' / ' + (F[1]??'—'));
+      pillAccel.textContent= 'Accel: ' + ((latest?.accel || []).join(', ') || '—');
+      pillGyro.textContent = 'Gyro: '  + ((latest?.gyro || []).join(', ') || '—');
+    }
+
+    // --- main loader ---
+    async function load(){
+      const t = Date.now(); // cache-buster
+      const urlLatest = `/latest?device_id=${encodeURIComponent(deviceId)}&_t=${t}`;
+      const r = await fetch(urlLatest);
+      if(!r.ok) throw new Error('latest http '+r.status);
+      const j = await r.json();
+
+      out.textContent = JSON.stringify(j, null, 2);
+      whenEl.textContent = j && j.ts ? fmt(j.ts) : '—';
+      setOnline(j && j.ts && (Date.now() - Number(j.ts) < 120000));
+      fillPills(j);
+
+      // helpful links & csv
+      aLatest.href = urlLatest;
+      aHist.href = `/history?device_id=${encodeURIComponent(deviceId)}&limit=5&_t=${t}`;
+      csv.href = `/export.csv?device_id=${encodeURIComponent(deviceId)}&since=0&_t=${t}`;
+    }
+
+    // --- demo sender (one click adds data) ---
+    async function sendDemo(){
+      const body = {
+        device_id: deviceId,
+        temp:[36.8 + Math.random(), 37 + Math.random(), 38 + Math.random(), 36.7 + Math.random(), 36.9 + Math.random()],
+        gsr: 500 + Math.floor(Math.random()*200),
+        fsr: [Math.floor(Math.random()*20), Math.floor(Math.random()*20)],
+        accel: [0,0,1],
+        gyro: [0.2,0.1,0.0],
+        flex: 20 + Math.floor(Math.random()*15)
+      };
+      const r = await fetch('/ingest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const j = await r.json();
+      console.log('ingest:', j);
+      await load();
+    }
+
+    // --- wiring buttons & auto-refresh ---
+    let timer = setInterval(load, 2000);
+    document.getElementById('btnRefresh').onclick = load;
+    document.getElementById('btnAuto').onclick = (e)=>{
+      if(timer){ clearInterval(timer); timer=null; e.target.textContent='Auto: OFF'; }
+      else { timer=setInterval(load,2000); e.target.textContent='Auto: ON'; }
+    };
+    document.getElementById('btnSend').onclick = sendDemo;
+    document.getElementById('device').addEventListener('change', (e)=>{
+      deviceId = e.target.value.trim() || 'demo';
+      devEl.textContent = deviceId;
+      // update URL so you can share it
+      const u = new URL(location.href); u.searchParams.set('device_id', deviceId); history.replaceState(null,'',u);
+      load();
+    });
+
+    // first load
+    load().catch(err => out.textContent = 'Error: '+err.message);
+  </script>
+</body>
+</html>
+

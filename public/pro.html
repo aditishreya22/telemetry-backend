@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Telemetry — Live Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Tailwind + Chart.js (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <style>
+    html,body{height:100%}
+    body{
+      background:
+        radial-gradient(900px 600px at 15% 20%, #a78bfa22, transparent 35%),
+        radial-gradient(700px 500px at 90% 10%, #34d39922, transparent 45%),
+        #f6f7fb;
+    }
+    .card{
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      box-shadow: 0 12px 30px rgba(16,24,40,.06);
+    }
+    .chip{
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 9999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: #374151;
+    }
+    .kpi{ transition: transform .15s ease, box-shadow .15s ease; }
+    .kpi:hover{ transform: translateY(-2px); box-shadow: 0 12px 24px rgba(99,102,241,.08); }
+    .dot{ width:10px;height:10px;border-radius:9999px;display:inline-block; box-shadow:0 0 0 3px rgba(16,185,129,.15); }
+    .dot.off{ background:#ef4444; box-shadow:0 0 0 3px rgba(239,68,68,.15); }
+    .dot.on{  background:#10b981; }
+    .btn{
+      border-radius: 10px; padding: 10px 14px; border: 1px solid #e5e7eb; background: white;
+      transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+    }
+    .btn:hover{ transform: translateY(-1px); box-shadow: 0 8px 18px rgba(0,0,0,.06) }
+    .btn.primary{ background: linear-gradient(180deg,#6366f1,#4f46e5); color:white; border:none }
+    .btn.primary:hover{ box-shadow: 0 12px 24px rgba(99,102,241,.35) }
+    .btn.green{ background: linear-gradient(180deg,#10b981,#059669); color:white; border:none }
+    .btn.green:hover{ box-shadow: 0 12px 24px rgba(16,185,129,.35) }
+    .muted{ color:#6b7280 }
+    pre{ background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:12px; }
+  </style>
+</head>
+<body class="text-slate-900">
+  <div class="max-w-7xl mx-auto px-5 py-6">
+
+    <!-- Header -->
+    <div class="flex flex-wrap items-center gap-3 justify-between mb-6">
+      <div class="flex items-center gap-3">
+        <span id="onlineDot" class="dot off"></span>
+        <h1 class="text-3xl font-bold tracking-tight">Telemetry Live Dashboard</h1>
+      </div>
+      <div class="muted">Device: <b id="devLbl">demo</b> • Last updated: <span id="lastWhen">—</span></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card p-4 mb-6">
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="muted">Device ID</span>
+        <input id="deviceInput" value="demo" class="border border-gray-300 rounded-lg px-3 py-2 w-40 focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+        <button id="autoBtn" class="btn">Auto: ON</button>
+        <button id="sendBtn" class="btn primary">Send demo reading</button>
+        <a id="csvBtn" class="btn green" href="#" download>Export CSV</a>
+        <div class="flex-1"></div>
+        <a class="chip" href="/latest?device_id=demo" target="_blank">/latest</a>
+        <a class="chip" href="/history?device_id=demo&limit=10" target="_blank">/history</a>
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+      <div class="card p-4 kpi"><div class="muted text-xs">Temp1</div><div id="k1" class="text-2xl font-semibold">—</div></div>
+      <div class="card p-4 kpi"><div class="muted text-xs">Temp2</div><div id="k2" class="text-2xl font-semibold">—</div></div>
+      <div class="card p-4 kpi"><div class="muted text-xs">Temp3</div><div id="k3" class="text-2xl font-semibold">—</div></div>
+      <div class="card p-4 kpi"><div class="muted text-xs">GSR</div><div id="kG" class="text-2xl font-semibold">—</div></div>
+      <div class="card p-4 kpi"><div class="muted text-xs">FSR1/2</div><div id="kF" class="text-2xl font-semibold">—</div></div>
+      <div class="card p-4 kpi"><div class="muted text-xs">Flex</div><div id="kX" class="text-2xl font-semibold">—</div></div>
+    </div>
+
+    <!-- Charts -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="card p-5">
+        <div class="mb-3 font-medium">Temperature (rolling)</div>
+        <canvas id="tempChart" height="150"></canvas>
+      </div>
+      <div class="card p-5">
+        <div class="mb-3 font-medium">GSR & Flex (rolling)</div>
+        <canvas id="miscChart" height="150"></canvas>
+      </div>
+    </div>
+
+    <!-- Raw box -->
+    <div class="card p-5">
+      <div class="mb-2 font-medium">Raw latest JSON</div>
+      <pre id="rawBox" class="text-sm">{}</pre>
+    </div>
+  </div>
+
+  <script>
+    // ---------- helpers ----------
+    const qs = new URLSearchParams(location.search);
+    let deviceId = qs.get('device_id') || 'demo';
+
+    const devLbl = document.getElementById('devLbl');
+    const lastWhen = document.getElementById('lastWhen');
+    const rawBox = document.getElementById('rawBox');
+    const onlineDot = document.getElementById('onlineDot');
+    const csvBtn = document.getElementById('csvBtn');
+    const deviceInput = document.getElementById('deviceInput');
+    const k1 = document.getElementById('k1'), k2 = document.getElementById('k2'), k3 = document.getElementById('k3');
+    const kG = document.getElementById('kG'), kF = document.getElementById('kF'), kX = document.getElementById('kX');
+
+    deviceInput.value = deviceId; devLbl.textContent = deviceId;
+
+    function fmt(ms){ const n=Number(ms); return isFinite(n) ? new Date(n).toLocaleString() : '—'; }
+    function setOnline(ok){ onlineDot.className = 'dot ' + (ok ? 'on' : 'off'); }
+
+    // ---------- charts ----------
+    const tempChart = new Chart(document.getElementById('tempChart'), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'T1', data: [], borderWidth: 2, tension: .35 },
+        { label: 'T2', data: [], borderWidth: 2, tension: .35 },
+        { label: 'T3', data: [], borderWidth: 2, tension: .35 },
+      ]},
+      options: { animation:{duration:260}, plugins:{legend:{labels:{color:'#374151'}}}, scales:{ x:{ticks:{color:'#6b7280'}}, y:{ticks:{color:'#6b7280'}} } }
+    });
+    const miscChart = new Chart(document.getElementById('miscChart'), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'GSR', data: [], borderWidth: 2, tension: .35 },
+        { label: 'Flex', data: [], borderWidth: 2, tension: .35 },
+      ]},
+      options: { animation:{duration:260}, plugins:{legend:{labels:{color:'#374151'}}}, scales:{ x:{ticks:{color:'#6b7280'}}, y:{ticks:{color:'#6b7280'}} } }
+    });
+
+    function pushPoint(chart, vals, label){
+      const MAX = 60;
+      chart.data.labels.push(label);
+      chart.data.datasets.forEach((ds,i)=>ds.data.push(vals[i] ?? null));
+      if (chart.data.labels.length > MAX){
+        chart.data.labels.shift();
+        chart.data.datasets.forEach(ds=>ds.data.shift());
+      }
+      chart.update('none');
+    }
+
+    function fillKpis(j){
+      const T = j?.temp || [];
+      k1.textContent = T[0]?.toFixed ? T[0].toFixed(1)+'°C' : (T[0] ?? '—');
+      k2.textContent = T[1]?.toFixed ? T[1].toFixed(1)+'°C' : (T[1] ?? '—');
+      k3.textContent = T[2]?.toFixed ? T[2].toFixed(1)+'°C' : (T[2] ?? '—');
+      kG.textContent = j?.gsr ?? '—';
+      kF.textContent = j?.fsr ? `${j.fsr[0]??'—'} / ${j.fsr[1]??'—'}` : '—';
+      kX.textContent = j?.flex ?? '—';
+    }
+
+    function updateAll(j){
+      if(!j || j.device_id !== deviceId) return;
+      rawBox.textContent = JSON.stringify(j, null, 2);
+      lastWhen.textContent = j.ts ? fmt(j.ts) : '—';
+      setOnline(j.ts && (Date.now() - j.ts < 120000));
+      fillKpis(j);
+      const T = j.temp || [];
+      const label = new Date().toLocaleTimeString();
+      pushPoint(tempChart, [T[0], T[1], T[2]], label);
+      pushPoint(miscChart, [j.gsr ?? null, j.flex ?? null], label);
+      csvBtn.href = `/export.csv?device_id=${encodeURIComponent(deviceId)}&since=0`;
+    }
+
+    async function fetchLatestOnce(){
+      const r = await fetch(`/latest?device_id=${encodeURIComponent(deviceId)}&_t=${Date.now()}`);
+      const j = await r.json(); updateAll(j);
+    }
+
+    // ---------- live via SSE, with fallback ----------
+    let es=null, poller=null;
+    function startSSE(){
+      try{
+        es = new EventSource(`/stream?device_id=${encodeURIComponent(deviceId)}`);
+
+        // named event
+        es.addEventListener('reading', (e)=> { try{ updateAll(JSON.parse(e.data)); }catch{} });
+
+        // unnamed "message" fallback (just in case)
+        es.onmessage = (e)=> { try{ updateAll(JSON.parse(e.data)); }catch{} };
+
+        es.onerror = ()=>{ try{es && es.close()}catch{}; es=null; startPolling(); };
+      }catch{ startPolling(); }
+    }
+    function startPolling(){
+      if(poller) return;
+      poller = setInterval(fetchLatestOnce, 2000);
+    }
+
+    // Buttons
+    document.getElementById('autoBtn').onclick = (ev)=>{
+      const btn = ev.currentTarget;
+      if (es){ es.close(); es=null; btn.textContent='Auto: OFF'; }
+      else { startSSE(); btn.textContent='Auto: ON'; }
+    };
+
+    document.getElementById('sendBtn').onclick = async ()=>{
+      const body = {
+        device_id: deviceId,
+        temp: [36.5+Math.random(), 37+Math.random(), 38+Math.random()],
+        gsr: 500 + Math.floor(Math.random()*150),
+        fsr: [Math.floor(Math.random()*20), Math.floor(Math.random()*20)],
+        accel: [0,0,1], gyro: [0.2,0.1,0.0], flex: 20 + Math.floor(Math.random()*15)
+      };
+      await fetch('/ingest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      // Force an immediate pull so UI updates even before SSE tick lands
+      fetchLatestOnce();
+    };
+
+    deviceInput.addEventListener('change', (e)=>{
+      deviceId = (e.target.value||'demo').trim();
+      devLbl.textContent = deviceId;
+      if (es){ es.close(); es=null; }
+      startSSE(); fetchLatestOnce();
+      const u = new URL(location.href); u.searchParams.set('device_id', deviceId); history.replaceState(null,'',u);
+    });
+
+    // Boot
+    startSSE();
+    fetchLatestOnce();
+  </script>
+</body>
+</html>
